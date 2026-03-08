@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Дашборд отчётов</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f0f13; color: #e8e8f0; min-height: 100vh; }
+  .header { padding: 24px 32px; background: #16161e; border-bottom: 1px solid #2a2a3a; display: flex; align-items: center; justify-content: space-between; }
+  .header h1 { font-size: 20px; font-weight: 600; }
+  .filters { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .filters input[type="date"], .filters select {
+    background: #1e1e2e; border: 1px solid #3a3a4a; color: #e8e8f0;
+    padding: 8px 12px; border-radius: 8px; font-size: 14px; cursor: pointer;
+  }
+  .btn { background: #6c63ff; color: #fff; border: none; padding: 8px 18px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+  .btn:hover { background: #574fd6; }
+  .container { padding: 28px 32px; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 28px; }
+  .kpi { background: #16161e; border: 1px solid #2a2a3a; border-radius: 12px; padding: 20px; }
+  .kpi .label { font-size: 12px; color: #8888aa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: .5px; }
+  .kpi .value { font-size: 32px; font-weight: 700; color: #c8c0ff; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 28px; }
+  @media(max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
+  .card { background: #16161e; border: 1px solid #2a2a3a; border-radius: 12px; padding: 20px; }
+  .card h3 { font-size: 14px; color: #8888aa; margin-bottom: 16px; text-transform: uppercase; letter-spacing: .5px; }
+  .manager-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #2a2a3a; }
+  .manager-row:last-child { border-bottom: none; }
+  .manager-name { font-weight: 500; }
+  .manager-stats { display: flex; gap: 16px; font-size: 13px; color: #aaaacc; }
+  .stat-item { text-align: center; }
+  .stat-item .n { font-size: 16px; font-weight: 600; color: #e8e8f0; }
+  .stat-item .l { font-size: 10px; color: #6666aa; }
+  .loading { text-align: center; padding: 60px; color: #6666aa; }
+  .error { color: #ff6b6b; text-align: center; padding: 40px; }
+  canvas { max-height: 260px; }
+  .badge { font-size: 11px; background: #2a2a4a; padding: 2px 8px; border-radius: 20px; color: #9090cc; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📊 Отчёты менеджеров</h1>
+  <div class="filters">
+    <input type="date" id="dateFrom">
+    <input type="date" id="dateTo">
+    <select id="managerFilter"><option value="">Все менеджеры</option></select>
+    <button class="btn" onclick="loadData()">Применить</button>
+  </div>
+</div>
+
+<div class="container">
+  <div id="app"><div class="loading">Загрузка данных...</div></div>
+</div>
+
+<script>
+// ——— НАСТРОЙКИ ———
+const SHEET_ID = "YOUR_GOOGLE_SHEET_ID";        // заменить на ID таблицы
+const API_KEY  = "YOUR_GOOGLE_API_KEY";          // заменить на Google API Key
+// ————————————————
+
+let allRows = [];
+
+async function fetchSheetData() {
+  const range = encodeURIComponent("Отчёты!A:I");
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?key=${API_KEY}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Ошибка загрузки: ${res.status}`);
+  const json = await res.json();
+  return json.values || [];
+}
+
+function parseRows(raw) {
+  if (raw.length < 2) return [];
+  const [headers, ...rows] = raw;
+  return rows.map(r => ({
+    date:     r[0] || "",
+    manager:  r[1] || "",
+    requests: parseInt(r[2]) || 0,
+    fittings: parseInt(r[3]) || 0,
+    contact:  parseInt(r[4]) || 0,
+    closed:   parseInt(r[5]) || 0,
+    reasons:  r[6] || "",
+    comment:  r[7] || "",
+  }));
+}
+
+function filterRows(rows) {
+  const from    = document.getElementById("dateFrom").value;
+  const to      = document.getElementById("dateTo").value;
+  const manager = document.getElementById("managerFilter").value;
+  return rows.filter(r => {
+    if (from && r.date < from) return false;
+    if (to   && r.date > to)   return false;
+    if (manager && r.manager !== manager) return false;
+    return true;
+  });
+}
+
+function sumField(rows, field) {
+  return rows.reduce((s, r) => s + (r[field] || 0), 0);
+}
+
+function groupBy(rows, key) {
+  return rows.reduce((acc, r) => {
+    const k = r[key];
+    if (!acc[k]) acc[k] = [];
+    acc[k].push(r);
+    return acc;
+  }, {});
+}
+
+function renderKPIs(rows) {
+  return `<div class="kpi-grid">
+    ${kpi("Новых заявок",    sumField(rows,"requests"))}
+    ${kpi("Примерок",        sumField(rows,"fittings"))}
+    ${kpi("На связи",        sumField(rows,"contact"))}
+    ${kpi("Закрыто",         sumField(rows,"closed"))}
+    ${kpi("Отчётов",         rows.length)}
+  </div>`;
+}
+
+function kpi(label, value) {
+  return `<div class="kpi"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+}
+
+function renderManagers(rows) {
+  const byManager = groupBy(rows, "manager");
+  const items = Object.entries(byManager).map(([name, rs]) => `
+    <div class="manager-row">
+      <span class="manager-name">${name}</span>
+      <div class="manager-stats">
+        ${mstat(sumField(rs,"requests"),  "заявок")}
+        ${mstat(sumField(rs,"fittings"),  "примерок")}
+        ${mstat(sumField(rs,"contact"),   "связи")}
+        ${mstat(sumField(rs,"closed"),    "закрыто")}
+      </div>
+    </div>`).join("");
+  return `<div class="card"><h3>По менеджерам</h3>${items}</div>`;
+}
+
+function mstat(n, l) {
+  return `<div class="stat-item"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+}
+
+function renderDynamicsChart(rows) {
+  const byDate = groupBy(rows, "date");
+  const dates  = Object.keys(byDate).sort();
+  const data   = {
+    requests: dates.map(d => sumField(byDate[d], "requests")),
+    fittings: dates.map(d => sumField(byDate[d], "fittings")),
+  };
+  const id = "chartDyn_" + Date.now();
+  setTimeout(() => {
+    const ctx = document.getElementById(id);
+    if (!ctx) return;
+    new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: dates.map(d => d.slice(5)),
+        datasets: [
+          { label: "Новых заявок", data: data.requests, borderColor: "#6c63ff", backgroundColor: "rgba(108,99,255,.15)", tension: .3, fill: true },
+          { label: "Примерок",     data: data.fittings, borderColor: "#ff6b9d", backgroundColor: "rgba(255,107,157,.1)",  tension: .3, fill: true },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: "#aaaacc", font: { size: 12 } } } },
+        scales: {
+          x: { ticks: { color: "#6666aa" }, grid: { color: "#2a2a3a" } },
+          y: { ticks: { color: "#6666aa" }, grid: { color: "#2a2a3a" }, beginAtZero: true },
+        }
+      }
+    });
+  }, 50);
+  return `<div class="card"><h3>Динамика по дням</h3><canvas id="${id}" height="240"></canvas></div>`;
+}
+
+function renderManagerChart(rows) {
+  const byManager = groupBy(rows, "manager");
+  const names = Object.keys(byManager);
+  const id = "chartMgr_" + Date.now();
+  setTimeout(() => {
+    const ctx = document.getElementById(id);
+    if (!ctx) return;
+    new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: names,
+        datasets: [
+          { label: "Заявок",   data: names.map(n => sumField(byManager[n],"requests")),  backgroundColor: "#6c63ff" },
+          { label: "Примерок", data: names.map(n => sumField(byManager[n],"fittings")),  backgroundColor: "#ff6b9d" },
+          { label: "Закрыто",  data: names.map(n => sumField(byManager[n],"closed")),    backgroundColor: "#ffb86c" },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: "#aaaacc", font: { size: 12 } } } },
+        scales: {
+          x: { ticks: { color: "#6666aa" }, grid: { color: "#2a2a3a" } },
+          y: { ticks: { color: "#6666aa" }, grid: { color: "#2a2a3a" }, beginAtZero: true },
+        }
+      }
+    });
+  }, 50);
+  return `<div class="card"><h3>Сравнение менеджеров</h3><canvas id="${id}" height="240"></canvas></div>`;
+}
+
+function populateManagerFilter(rows) {
+  const sel = document.getElementById("managerFilter");
+  const current = sel.value;
+  const names = [...new Set(rows.map(r => r.manager).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">Все менеджеры</option>' +
+    names.map(n => `<option value="${n}" ${n===current?"selected":""}>${n}</option>`).join("");
+}
+
+function setDefaultDates() {
+  const to   = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - 30);
+  const fmt = d => d.toISOString().slice(0, 10);
+  if (!document.getElementById("dateFrom").value) document.getElementById("dateFrom").value = fmt(from);
+  if (!document.getElementById("dateTo").value)   document.getElementById("dateTo").value   = fmt(to);
+}
+
+async function loadData() {
+  const app = document.getElementById("app");
+  app.innerHTML = '<div class="loading">Загрузка...</div>';
+  try {
+    const raw  = await fetchSheetData();
+    allRows    = parseRows(raw);
+    populateManagerFilter(allRows);
+    renderDashboard(filterRows(allRows));
+  } catch(e) {
+    app.innerHTML = `<div class="error">Ошибка загрузки данных:<br>${e.message}<br><small>Проверь SHEET_ID и API_KEY в коде</small></div>`;
+  }
+}
+
+function renderDashboard(rows) {
+  document.getElementById("app").innerHTML =
+    renderKPIs(rows) +
+    `<div class="grid-2">` +
+      renderDynamicsChart(rows) +
+      renderManagerChart(rows) +
+    `</div>` +
+    renderManagers(rows);
+}
+
+setDefaultDates();
+loadData();
+</script>
+</body>
+</html>
