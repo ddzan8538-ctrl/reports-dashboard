@@ -209,12 +209,16 @@ function isDark(){ return document.documentElement.getAttribute('data-theme') ==
 
 // ——— ЗАГРУЗКА ИЗ GOOGLE SHEETS ———
 async function fetchSheetData() {
-  const range = encodeURIComponent("Отчёты!A:I");
+  const range = encodeURIComponent("Отчёты!A:P");
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?key=${API_KEY}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return (await res.json()).values || [];
 }
+
+// Колонки: A=дата B=менеджер C=заявки D=примерки E=связь F=закрыто
+//          G=спам H=аутлет I=модель J=размер K=прокат L=инфо M=неотв N=другая O=комм P=msg_id
+const REASON_COLS = ['спам','аутлет','нет нужной модели','нет нужного размера','прокат','интересовались информацией','не отвечает','другая'];
 
 function parseRows(raw) {
   if (raw.length < 2) return [];
@@ -225,8 +229,15 @@ function parseRows(raw) {
     fittings: parseInt(r[3]) || 0,
     contact:  parseInt(r[4]) || 0,
     closed:   parseInt(r[5]) || 0,
-    reasons:  r[6] || '',
-    comment:  r[7] || '',
+    r_spam:   parseInt(r[6])  || 0,
+    r_outlet: parseInt(r[7])  || 0,
+    r_model:  parseInt(r[8])  || 0,
+    r_size:   parseInt(r[9])  || 0,
+    r_rent:   parseInt(r[10]) || 0,
+    r_info:   parseInt(r[11]) || 0,
+    r_noresp: parseInt(r[12]) || 0,
+    r_other:  parseInt(r[13]) || 0,
+    comment:  r[14] || '',
   })).filter(r => r.date && r.manager);
 }
 
@@ -419,15 +430,25 @@ function topManagers(rows){
 }
 
 function reasons(rows){
-  const c = {};
-  rows.forEach(r=>{ if(!r.reasons)return; r.reasons.split(',').forEach(x=>{ const k=x.trim().toLowerCase(); if(k)c[k]=(c[k]||0)+1; }); });
-  const s = Object.entries(c).sort((a,b)=>b[1]-a[1]).slice(0,7);
-  const max = s[0]?.[1]||1;
+  const CATS = [
+    {key:'r_spam',   label:'Спам'},
+    {key:'r_outlet', label:'Аутлет'},
+    {key:'r_model',  label:'Нет нужной модели'},
+    {key:'r_size',   label:'Нет нужного размера'},
+    {key:'r_rent',   label:'Прокат'},
+    {key:'r_info',   label:'Интересовались информацией'},
+    {key:'r_noresp', label:'Не отвечает'},
+    {key:'r_other',  label:'Другая'},
+  ];
+  const data = CATS.map(c => ({label: c.label, val: sum(rows, c.key)}))
+                   .filter(c => c.val > 0)
+                   .sort((a,b) => b.val - a.val);
+  const max = data[0]?.val || 1;
   return `<div class="card"><div class="card-title">Причины отказов</div>`+
-    (s.length ? s.map(([r,n])=>`<div class="reason-row">
-      <div class="reason-name">${r}</div>
-      <div class="reason-bar-wrap"><div class="reason-bar" style="width:${Math.round(n/max*100)}%"></div></div>
-      <div class="reason-count">${n}</div>
+    (data.length ? data.map(c=>`<div class="reason-row">
+      <div class="reason-name">${c.label}</div>
+      <div class="reason-bar-wrap"><div class="reason-bar" style="width:${Math.round(c.val/max*100)}%"></div></div>
+      <div class="reason-count">${c.val}</div>
     </div>`).join('') : '<div style="color:var(--muted);font-size:13px;padding:12px 0">Нет данных</div>')+`</div>`;
 }
 
